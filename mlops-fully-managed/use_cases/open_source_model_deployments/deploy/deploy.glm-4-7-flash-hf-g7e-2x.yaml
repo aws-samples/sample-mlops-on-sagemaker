@@ -1,0 +1,33 @@
+# zai-org/GLM-4.7-Flash from HuggingFace on one RTX PRO 6000
+model_name: glm-4-7-flash-hf-g7e-2x
+endpoint_name: glm-4-7-flash-hf-g7e-2x
+huggingface:
+  model_id: zai-org/GLM-4.7-Flash
+  # The commit to stage
+  # curl -s https://huggingface.co/api/models/zai-org/GLM-4.7-Flash | jq -r .sha
+  revision: 7dd20894a642a0aa287e9827cb1a1f7f91386b67
+  stage_to_s3: "s3://sagemaker-us-west-2-123456789012/hf-weights/"
+# Glm4MoeLiteForCausalLM needs a recent vLLM
+image_uri: 763104351884.dkr.ecr.us-west-2.amazonaws.com/vllm:0.26.0-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.4
+instance_preferences:
+  - ml.g7e.2xlarge
+instance_count: 1
+model_data_download_timeout_seconds: 2400
+startup_health_check_timeout_seconds: 2400
+# Serving settings
+environment:
+  ENDPOINT_SERVER_TIMEOUT: 3600
+  HF_MODEL_ID: /opt/ml/model
+  MODEL_CACHE_ROOT: /opt/ml/model
+  SAGEMAKER_CONTAINER_LOG_LEVEL: 20
+  SAGEMAKER_MODEL_SERVER_TIMEOUT: 3600
+  SAGEMAKER_MODEL_SERVER_WORKERS: 1
+  SM_VLLM_TENSOR_PARALLEL_SIZE: 1
+  TENSOR_PARALLEL_DEGREE: 1
+  # 62.5 GB of weights leaves ~33 GB of the card for KV cache
+  SM_VLLM_MAX_MODEL_LEN: 16384
+enable_network_isolation: true
+serializer: json
+deserializer: json
+payload_path: ./deploy/payload.chat.json
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

@@ -1,0 +1,4 @@
+FROM public.ecr.aws/lambda/python:3.12
+RUN pip install mlflow-skinny sagemaker-mlflow
+COPY docker/lambda_mlflow/create_update_model_card_lambda.py ${LAMBDA_TASK_ROOT}/
+CMD ["create_update_model_card_lambda.lambda_handler"]

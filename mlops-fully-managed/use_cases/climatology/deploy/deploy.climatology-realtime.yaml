@@ -1,0 +1,33 @@
+# How the model is served
+deploy_type: real-time
+
+# model_package_arn: "arn:aws:sagemaker:us-west-2:123456789012:model-package/climatology-package-group/2"
+model_data_s3_uri: "s3://amzn-s3-demo-bucket/climatology/best-model/model.tar.gz"
+model_name: climatology-best-model-realtime
+
+# Code
+source_code_dir: ./deploy/best_model
+entry_script: inference.py
+
+# Compute
+image_uri: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:1.9-0
+instance_preferences:
+  - ml.m5.2xlarge
+instance_count: 1
+
+# Writes every request and response to S3 as JSONL for downstream observability
+data_capture:
+  destination_s3_uri: "s3://amzn-s3-demo-bucket/climatology/data-capture/"
+  sampling_percentage: 100
+  capture_modes: [Input, Output]
+  # Stored as plain text rather than base64
+  csv_content_types: [text/csv]
+
+# Invocation
+# Headerless CSV of feature columns only, with no target column
+serializer: csv
+deserializer: string
+payload_path: ./deploy/payload.csv
+
+# Permissions
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

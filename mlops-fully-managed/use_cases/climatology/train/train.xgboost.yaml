@@ -1,0 +1,37 @@
+# Metadata
+job_name: climatology-xgboost
+
+# Data
+training_data_s3_path: "s3://amzn-s3-demo-bucket/climatology/processed/train"
+validation_data_s3_path: "s3://amzn-s3-demo-bucket/climatology/processed/validation"
+model_output_s3_path: "s3://amzn-s3-demo-bucket/climatology/models/xgboost"
+
+# Code
+source_code_dir: ./train/xgboost
+source_code_entry_point_command: >-
+  python xgboost_train.py
+  --max_depth 8
+  --n_estimators 300
+  --learning_rate 0.1
+  --max_train_rows 1000000
+
+# Compute
+# Same image as the random forest job and the batch transform, so a model
+# pickled by either training job loads everywhere else. Not the XGBoost DLC:
+# its Python is too old for mlflow 3, and xgboost installs here via
+# requirements.txt anyway
+image_uri: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:1.9-0
+instance_type: ml.m5.2xlarge
+instance_count: 1
+instance_volume_size: 50
+keep_alive_hours: 1
+max_runtime_hours: 2
+# Optional reserved capacity; instance_type and instance_count must match the plan
+# flexible_training_plan_arn: "arn:aws:sagemaker:us-west-2:123456789012:training-plan/<name>"
+
+# Experiment tracking
+mlflow_arn: "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-EXAMPLE123"
+mlflow_experiment_name: climatology
+
+# Permissions
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

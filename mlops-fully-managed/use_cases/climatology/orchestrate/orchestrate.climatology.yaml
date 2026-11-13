@@ -1,0 +1,39 @@
+pipeline_name: ClimatologyPipeline
+pipeline_description: GHCN daily high temperature pipeline
+
+#   process.ghcn ---> train.xgboost -------> process.select_model
+#                \                        /         |
+#                 -> train.random_forest    register.climatology
+#                                                   |
+#                                           process.evaluation
+#                                                   |
+#                                            gate.evaluation
+#                                                   |
+#                                         deploy.climatology-batch
+#                                                   |
+#                                             process.report
+pipeline_definition:
+  "process.ghcn.yaml":
+    - "train.xgboost.yaml"
+    - "train.random_forest.yaml"
+  "train.xgboost.yaml":
+    - "process.select_model.yaml"
+  "train.random_forest.yaml":
+    - "process.select_model.yaml"
+  "process.select_model.yaml":
+    - "register.climatology.yaml"
+  "register.climatology.yaml":
+    - "process.evaluation.yaml"
+  "process.evaluation.yaml":
+    - "gate.evaluation.yaml"
+  "gate.evaluation.yaml":
+    - "deploy.climatology-batch.yaml"
+  "deploy.climatology-batch.yaml":
+    - "process.report.yaml"
+
+# Creates the model card for the best model after registration
+lambda_mlflow_image_uri: "123456789012.dkr.ecr.us-west-2.amazonaws.com/lambda_mlflow:latest"
+
+# Permissions
+lambda_execution_role: "arn:aws:iam::123456789012:role/service-role/LambdaModelCardRole"
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

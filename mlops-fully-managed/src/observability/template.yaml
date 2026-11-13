@@ -1,0 +1,705 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SageMaker endpoint observability infrastructure.
+  Deploys EventBridge -> Step Functions (Distributed Map over JSONL) -> Lambda
+  pipeline for processing DataCapture files. Supports either LLM monitoring
+  (MLflow traces + GenAI evaluations) or predictive ML monitoring (evidently).
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Default: "obs"
+    Description: Prefix for resource names to avoid collisions
+
+  MonitoringType:
+    Type: String
+    AllowedValues: ["llm", "predictive_ml"]
+    Description: Type of monitoring - one per endpoint
+
+  DataCaptureBucketName:
+    Type: String
+    Description: S3 bucket where SageMaker DataCapture stores JSONL files
+
+  MlflowAppArn:
+    Type: String
+    Description: ARN of the SageMaker MLflow tracking server
+
+  MlflowExperimentName:
+    Type: String
+    Description: MLflow experiment name for logging traces and metrics
+
+  SagemakerEndpointName:
+    Type: String
+    Description: Name of the SageMaker endpoint being monitored
+
+  EvaluationModelId:
+    Type: String
+    Default: "bedrock:/global.anthropic.claude-sonnet-4-20250514-v1:0"
+    Description: Bedrock model ID for LLM-as-a-judge evaluations
+
+  EvaluationModelParameters:
+    Type: String
+    Default: '{"temperature":0,"max_tokens":512,"anthropic_version":"bedrock-2023-05-31","top_p":0.9,"stop_sequences":["}"]}'
+    Description: JSON string of model parameters for evaluations
+
+  ScorersConfig:
+    Type: String
+    Default: '{"builtin":["safety","relevance_to_query","fluency"],"guidelines":[],"custom_judges":[]}'
+    Description: JSON string of scorer configuration for LLM evaluations
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 3008
+    Description: Lambda function memory in MB
+
+  LambdaTimeout:
+    Type: Number
+    Default: 900
+    Description: Lambda function timeout in seconds
+
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: CloudWatch log retention period
+
+  StepFunctionsTimeoutSeconds:
+    Type: Number
+    Default: 3600
+    Description: Step Functions state machine timeout in seconds
+
+  MaxItemsPerBatch:
+    Type: Number
+    Default: 10
+    Description: Max JSONL records per batch sent to Lambda
+
+  MaxConcurrency:
+    Type: Number
+    Default: 100
+    Description: Max concurrent child executions in Distributed Map
+
+  # Predictive ML parameters
+  ReferenceBucket:
+    Type: String
+    Default: ""
+    Description: S3 bucket for baseline/ground-truth files (defaults to DataCaptureBucketName if empty)
+
+  BaselineS3Key:
+    Type: String
+    Default: ""
+    Description: S3 key for baseline reference data CSV
+
+  GroundTruthS3Key:
+    Type: String
+    Default: ""
+    Description: S3 key for ground truth labels CSV
+
+  FeatureColumns:
+    Type: String
+    Default: ""
+    Description: Comma-separated feature column names
+
+  SnsTopicArn:
+    Type: String
+    Default: ""
+    Description: SNS topic ARN for quality degradation alerts (optional)
+
+  TaskType:
+    Type: String
+    Default: binary_classification
+    AllowedValues:
+      - binary_classification
+      - regression
+    Description: Which model quality report the predictive Lambda runs
+
+  RegressionThresholds:
+    Type: String
+    Default: "{}"
+    Description: 'JSON string of Evidently metric name -> limit for regression alerts, e.g. {"MAE": 3.0, "R2Score": 0.8}'
+
+  ThresholdF1:
+    Type: String
+    Default: "0.7"
+
+  ThresholdAccuracy:
+    Type: String
+    Default: "0.8"
+
+  ThresholdRocAuc:
+    Type: String
+    Default: "0.75"
+
+  DriftThreshold:
+    Type: String
+    Default: "0.1"
+
+  AlertThresholds:
+    Type: String
+    Default: "{}"
+    Description: JSON string of scorer name -> max failure rate for LLM evaluation alerts
+
+  # Lambda image URIs
+  LlmLambdaImageUri:
+    Type: String
+    Default: ""
+    Description: ECR image URI for the LLM trace-logging Lambda
+
+  EvaluateLambdaImageUri:
+    Type: String
+    Default: ""
+    Description: ECR image URI for the LLM evaluation Lambda
+
+  PredictiveLambdaImageUri:
+    Type: String
+    Default: ""
+    Description: ECR image URI for the predictive ML monitoring Lambda
+
+Conditions:
+  IsLLM: !Equals [!Ref MonitoringType, "llm"]
+  IsPredictiveML: !Equals [!Ref MonitoringType, "predictive_ml"]
+  HasSnsTopicArn: !Not [!Equals [!Ref SnsTopicArn, ""]]
+  HasReferenceBucket: !Not [!Equals [!Ref ReferenceBucket, ""]]
+
+Resources:
+  # ---- IAM Roles ----
+
+  LlmLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: IsLLM
+    Properties:
+      RoleName: !Sub "${StackPrefix}-llm-processor-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: !Sub "${StackPrefix}-llm-processor-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:GetBucket*
+                  - s3:List*
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                  - s3:List*
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}"
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - sagemaker:DescribeMlflowApp
+                  - sagemaker:CallMlflowAppApi
+                  - sagemaker:ListMlflowApps
+                Resource: !Ref MlflowAppArn
+
+  EvaluateLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: IsLLM
+    Properties:
+      RoleName: !Sub "${StackPrefix}-evaluate-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: !Sub "${StackPrefix}-evaluate-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                  - s3:List*
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}"
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - sagemaker:DescribeMlflowApp
+                  - sagemaker:CallMlflowAppApi
+                  - sagemaker:ListMlflowApps
+                Resource: !Ref MlflowAppArn
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                Resource: "*"
+              - !If
+                - HasSnsTopicArn
+                - Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref SnsTopicArn
+                - !Ref "AWS::NoValue"
+
+  PredictiveLambdaRole:
+    Type: AWS::IAM::Role
+    Condition: IsPredictiveML
+    Properties:
+      RoleName: !Sub "${StackPrefix}-predictive-processor-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: !Sub "${StackPrefix}-predictive-processor-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:GetBucket*
+                  - s3:List*
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                  - s3:List*
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}"
+                  - !Sub "arn:${AWS::Partition}:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - sagemaker:DescribeMlflowApp
+                  - sagemaker:CallMlflowAppApi
+                  - sagemaker:ListMlflowApps
+                Resource: !Ref MlflowAppArn
+              - !If
+                - HasReferenceBucket
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject*
+                    - s3:List*
+                  Resource:
+                    - !Sub "arn:${AWS::Partition}:s3:::${ReferenceBucket}"
+                    - !Sub "arn:${AWS::Partition}:s3:::${ReferenceBucket}/*"
+                - !Ref "AWS::NoValue"
+              - !If
+                - HasSnsTopicArn
+                - Effect: Allow
+                  Action: sns:Publish
+                  Resource: !Ref SnsTopicArn
+                - !Ref "AWS::NoValue"
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-sfn-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${StackPrefix}-sfn-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - !If
+                - IsLLM
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource:
+                    - !GetAtt LlmLambdaFunction.Arn
+                    - !Sub "${LlmLambdaFunction.Arn}:*"
+                    - !GetAtt EvaluateLambdaFunction.Arn
+                    - !Sub "${EvaluateLambdaFunction.Arn}:*"
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource:
+                    - !GetAtt PredictiveLambdaFunction.Arn
+                    - !Sub "${PredictiveLambdaFunction.Arn}:*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                  - states:StopExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataCaptureBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - logs:GetLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:UpdateLogDelivery
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                Resource: "*"
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${StackPrefix}-eventbridge-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${StackPrefix}-eventbridge-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref MonitoringStateMachine
+
+  # ---- Lambda Functions ----
+
+  LlmLambdaFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsLLM
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-llm-processor"
+      PackageType: Image
+      Code:
+        ImageUri: !Ref LlmLambdaImageUri
+      Role: !GetAtt LlmLambdaRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          MLFLOW_TRACKING_URI: !Ref MlflowAppArn
+          MLFLOW_EXPERIMENT_NAME: !Ref MlflowExperimentName
+          SAGEMAKER_ENDPOINT_NAME: !Ref SagemakerEndpointName
+          DATA_CAPTURE_BUCKET: !Ref DataCaptureBucketName
+
+  EvaluateLambdaFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsLLM
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-evaluate"
+      PackageType: Image
+      Code:
+        ImageUri: !Ref EvaluateLambdaImageUri
+      Role: !GetAtt EvaluateLambdaRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          MLFLOW_TRACKING_URI: !Ref MlflowAppArn
+          MLFLOW_EXPERIMENT_NAME: !Ref MlflowExperimentName
+          SAGEMAKER_ENDPOINT_NAME: !Ref SagemakerEndpointName
+          EVALUATION_MODEL_ID: !Ref EvaluationModelId
+          EVALUATION_MODEL_PARAMETERS: !Ref EvaluationModelParameters
+          SCORERS_CONFIG: !Ref ScorersConfig
+          SNS_TOPIC_ARN: !Ref SnsTopicArn
+          ALERT_THRESHOLDS: !Ref AlertThresholds
+
+  PredictiveLambdaFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsPredictiveML
+    Properties:
+      FunctionName: !Sub "${StackPrefix}-predictive-processor"
+      PackageType: Image
+      Code:
+        ImageUri: !Ref PredictiveLambdaImageUri
+      Role: !GetAtt PredictiveLambdaRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          MLFLOW_TRACKING_URI: !Ref MlflowAppArn
+          MLFLOW_EXPERIMENT_NAME: !Ref MlflowExperimentName
+          SAGEMAKER_ENDPOINT_NAME: !Ref SagemakerEndpointName
+          DATA_CAPTURE_BUCKET: !Ref DataCaptureBucketName
+          REFERENCE_BUCKET: !If [HasReferenceBucket, !Ref ReferenceBucket, !Ref DataCaptureBucketName]
+          BASELINE_S3_KEY: !Ref BaselineS3Key
+          GROUND_TRUTH_S3_KEY: !Ref GroundTruthS3Key
+          FEATURE_COLUMNS: !Ref FeatureColumns
+          SNS_TOPIC_ARN: !Ref SnsTopicArn
+          TASK_TYPE: !Ref TaskType
+          REGRESSION_THRESHOLDS: !Ref RegressionThresholds
+          THRESHOLD_F1: !Ref ThresholdF1
+          THRESHOLD_ACCURACY: !Ref ThresholdAccuracy
+          THRESHOLD_ROC_AUC: !Ref ThresholdRocAuc
+          DRIFT_THRESHOLD: !Ref DriftThreshold
+
+  # ---- CloudWatch Logs ----
+
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/observability/${StackPrefix}-state-machine"
+      RetentionInDays: !Ref LogRetentionDays
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+
+  # ---- Step Functions (Distributed Map over JSONL) ----
+
+  MonitoringStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${StackPrefix}-monitoring"
+      RoleArn: !GetAtt StateMachineRole.Arn
+      TracingConfiguration:
+        Enabled: true
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+        Level: ALL
+      DefinitionString: !If
+        - IsLLM
+        - !Sub |
+            {
+              "Comment": "Distributed Map: process JSONL DataCapture with LLM monitoring and evaluations",
+              "StartAt": "LLMDistributedMap",
+              "States": {
+                "LLMDistributedMap": {
+                  "Type": "Map",
+                  "ItemReader": {
+                    "Resource": "arn:aws:states:::s3:getObject",
+                    "ReaderConfig": {
+                      "InputType": "JSONL"
+                    },
+                    "Parameters": {
+                      "Bucket.$": "$.detail.bucket.name",
+                      "Key.$": "$.detail.object.key"
+                    }
+                  },
+                  "ItemProcessor": {
+                    "ProcessorConfig": {
+                      "Mode": "DISTRIBUTED",
+                      "ExecutionType": "EXPRESS"
+                    },
+                    "StartAt": "ProcessLLMBatch",
+                    "States": {
+                      "ProcessLLMBatch": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "OutputPath": "$.Payload",
+                        "Parameters": {
+                          "FunctionName": "${LlmLambdaFunction.Arn}",
+                          "Payload.$": "$"
+                        },
+                        "Retry": [
+                          {
+                            "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                            "IntervalSeconds": 2,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 2
+                          }
+                        ],
+                        "End": true
+                      }
+                    }
+                  },
+                  "ItemBatcher": {
+                    "MaxItemsPerBatch": ${MaxItemsPerBatch},
+                    "MaxInputBytesPerBatch": 245760,
+                    "BatchInput": {
+                      "s3_bucket.$": "$.detail.bucket.name",
+                      "s3_key.$": "$.detail.object.key"
+                    }
+                  },
+                  "MaxConcurrency": ${MaxConcurrency},
+                  "Label": "LLMDistributedMap",
+                  "Next": "RunEvaluations"
+                },
+                "RunEvaluations": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "OutputPath": "$.Payload",
+                  "Parameters": {
+                    "FunctionName": "${EvaluateLambdaFunction.Arn}",
+                    "Payload": {
+                      "s3_bucket.$": "$$.Execution.Input.detail.bucket.name",
+                      "s3_key.$": "$$.Execution.Input.detail.object.key"
+                    }
+                  },
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                      "IntervalSeconds": 5,
+                      "MaxAttempts": 2,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "End": true
+                }
+              },
+              "TimeoutSeconds": ${StepFunctionsTimeoutSeconds}
+            }
+        - !Sub |
+            {
+              "Comment": "Distributed Map: process JSONL DataCapture with predictive ML monitoring",
+              "StartAt": "PredictiveDistributedMap",
+              "States": {
+                "PredictiveDistributedMap": {
+                  "Type": "Map",
+                  "ItemReader": {
+                    "Resource": "arn:aws:states:::s3:getObject",
+                    "ReaderConfig": {
+                      "InputType": "JSONL"
+                    },
+                    "Parameters": {
+                      "Bucket.$": "$.detail.bucket.name",
+                      "Key.$": "$.detail.object.key"
+                    }
+                  },
+                  "ItemProcessor": {
+                    "ProcessorConfig": {
+                      "Mode": "DISTRIBUTED",
+                      "ExecutionType": "EXPRESS"
+                    },
+                    "StartAt": "ProcessPredictiveBatch",
+                    "States": {
+                      "ProcessPredictiveBatch": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "OutputPath": "$.Payload",
+                        "Parameters": {
+                          "FunctionName": "${PredictiveLambdaFunction.Arn}",
+                          "Payload.$": "$"
+                        },
+                        "Retry": [
+                          {
+                            "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                            "IntervalSeconds": 2,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 2
+                          }
+                        ],
+                        "End": true
+                      }
+                    }
+                  },
+                  "ItemBatcher": {
+                    "MaxItemsPerBatch": ${MaxItemsPerBatch},
+                    "MaxInputBytesPerBatch": 245760,
+                    "BatchInput": {
+                      "s3_bucket.$": "$.detail.bucket.name",
+                      "s3_key.$": "$.detail.object.key"
+                    }
+                  },
+                  "MaxConcurrency": ${MaxConcurrency},
+                  "Label": "PredictiveDistributedMap",
+                  "End": true
+                }
+              },
+              "TimeoutSeconds": ${StepFunctionsTimeoutSeconds}
+            }
+
+  # ---- EventBridge Rule ----
+
+  S3EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${StackPrefix}-s3-event-rule"
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref DataCaptureBucketName
+          object:
+            key:
+              - suffix: ".jsonl"
+      Targets:
+        - Id: MonitoringStateMachine
+          Arn: !Ref MonitoringStateMachine
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+Outputs:
+  LlmLambdaFunctionArn:
+    Condition: IsLLM
+    Description: ARN of the LLM trace-logging Lambda function
+    Value: !GetAtt LlmLambdaFunction.Arn
+    Export:
+      Name: !Sub "${StackPrefix}-LlmLambdaArn"
+
+  EvaluateLambdaFunctionArn:
+    Condition: IsLLM
+    Description: ARN of the LLM evaluation Lambda function
+    Value: !GetAtt EvaluateLambdaFunction.Arn
+    Export:
+      Name: !Sub "${StackPrefix}-EvaluateLambdaArn"
+
+  PredictiveLambdaFunctionArn:
+    Condition: IsPredictiveML
+    Description: ARN of the predictive ML monitoring Lambda function
+    Value: !GetAtt PredictiveLambdaFunction.Arn
+    Export:
+      Name: !Sub "${StackPrefix}-PredictiveLambdaArn"
+
+  StateMachineArn:
+    Description: ARN of the monitoring Step Functions state machine
+    Value: !Ref MonitoringStateMachine
+    Export:
+      Name: !Sub "${StackPrefix}-StateMachineArn"
+
+  EventBridgeRuleArn:
+    Description: ARN of the EventBridge rule
+    Value: !GetAtt S3EventRule.Arn
+    Export:
+      Name: !Sub "${StackPrefix}-EventBridgeRuleArn"
+
+  EnableEventBridgeCommand:
+    Description: Run this command to enable EventBridge notifications on the S3 bucket
+    Value: !Sub >
+      aws s3api put-bucket-notification-configuration
+      --bucket ${DataCaptureBucketName}
+      --notification-configuration '{"EventBridgeConfiguration": {}}'

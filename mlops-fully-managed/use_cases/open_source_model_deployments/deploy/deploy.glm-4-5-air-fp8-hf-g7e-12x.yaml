@@ -1,0 +1,32 @@
+# zai-org/GLM-4.5-Air-FP8 from HuggingFace on two RTX PRO 6000
+model_name: glm-4-5-air-fp8-hf-g7e-12x
+endpoint_name: glm-4-5-air-fp8-hf-g7e-12x
+huggingface:
+  model_id: zai-org/GLM-4.5-Air-FP8
+  # The commit to stage
+  # curl -s https://huggingface.co/api/models/zai-org/GLM-4.5-Air-FP8 | jq -r .sha
+  revision: f9a9c5acf5e543cd24d659a056c5dbcda78ffcfc
+  stage_to_s3: "s3://sagemaker-us-west-2-123456789012/hf-weights/"
+image_uri: 763104351884.dkr.ecr.us-west-2.amazonaws.com/vllm:0.26.0-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.4
+instance_preferences:
+  - ml.g7e.12xlarge
+instance_count: 1
+model_data_download_timeout_seconds: 3600
+startup_health_check_timeout_seconds: 3600
+# Serving settings
+environment:
+  ENDPOINT_SERVER_TIMEOUT: 3600
+  HF_MODEL_ID: /opt/ml/model
+  MODEL_CACHE_ROOT: /opt/ml/model
+  SAGEMAKER_CONTAINER_LOG_LEVEL: 20
+  SAGEMAKER_MODEL_SERVER_TIMEOUT: 3600
+  SAGEMAKER_MODEL_SERVER_WORKERS: 1
+  # 113 GB of weights does not fit one card, so it shards across both
+  SM_VLLM_TENSOR_PARALLEL_SIZE: 2
+  TENSOR_PARALLEL_DEGREE: 2
+  SM_VLLM_MAX_MODEL_LEN: 32768
+enable_network_isolation: true
+serializer: json
+deserializer: json
+payload_path: ./deploy/payload.chat.json
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

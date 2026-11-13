@@ -1,0 +1,2 @@
+# Already in the DLC, pinned here so an image without it still works
+huggingface_hub>=0.35

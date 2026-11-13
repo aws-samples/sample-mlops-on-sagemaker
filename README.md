@@ -1,11 +1,9 @@
-## My Project
+## MLOps on SageMaker AI
 
-TODO: Fill this README out!
+This repository contains MLOps examples using SageMaker AI:
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
+- `./mlops-fully-managed`: SageMaker AI provisions and manages the compute for each workload (Processing, Training, Inference, Pipelines)
+- `./mlops-hyperpod`: workloads run on a persistent SageMaker HyperPod cluster that you provision and operate
 
 ## Security
 

@@ -1,0 +1,68 @@
+# Observability config for a predictive ML endpoint
+# Deploy: uv run python ../../src/observability/deploy.py --env observability.predictive.yaml
+
+# --- Required ---
+# Deployed by deploy/deploy.climatology-realtime.yaml, which turns on DataCapture
+sagemaker_endpoint_arn: "arn:aws:sagemaker:us-west-2:123456789012:endpoint/climatology-best-model-realtime"
+mlflow_app_arn: "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-EXAMPLE123"
+mlflow_experiment_name: "climatology-monitoring"
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"
+
+monitoring_type: "predictive_ml"
+stack_name: "climatology-realtime-obs"
+
+# ECR image URI (populated after running build.sh/push.sh)
+obs_predictive_image_uri: "123456789012.dkr.ecr.us-west-2.amazonaws.com/obs-predictive-processor:latest"
+
+# --- Lambda / Step Functions ---
+lambda_memory_size: 3008
+lambda_timeout_seconds: 900
+step_functions_timeout_hours: 1
+# Each item is one captured request, and drift needs enough rows to compare
+# Max JSONL lines (requests) sent to one Lambda invocation
+max_items_per_batch: 200
+# How many Lambda invocations to make at the same time
+max_concurrency: 100
+log_retention_days: 7
+
+# SNS alerts (optional - leave empty to disable)
+sns_topic_arn: ""
+
+# --- Predictive ML settings ---
+predictive_ml:
+  # S3 bucket for baseline/ground-truth files (defaults to DataCapture bucket if empty)
+  reference_bucket: "amzn-s3-demo-bucket"
+  # 5,000 random training rows, feature columns only
+  baseline_s3_key: "climatology/observability/reference_data.csv"
+  # binary_classification or regression, which picks the model quality report
+  task_type: regression
+  # inference_id,target CSV of actual tmax, keyed by the InferenceId sent with each
+  # request (leave empty to skip model quality)
+  ground_truth_s3_key: "climatology/observability/ground_truth.csv"
+  # Column names matching the feature order in DataCapture CSV payloads
+  feature_columns:
+    - tmax_lag_1
+    - tmax_lag_2
+    - tmax_lag_3
+    - tmax_lag_7
+    - tmin_lag_1
+    - prcp_lag_1
+    - tmax_roll_7
+    - tmax_roll_30
+    - tmax_delta_1
+    - tmax_anomaly_7
+    - doy_sin
+    - doy_cos
+    - latitude
+    - longitude
+    - elevation
+  # Quality thresholds - breaches trigger SNS alerts. Classification takes f1_score,
+  # accuracy and roc_auc (alert below); regression takes mae, rmse and mape (alert
+  # above) and r2_score (alert below)
+  # Validation scored MAE 2.59, RMSE 3.47, R2 0.91; these allow about 25% slack
+  thresholds:
+    mae: 3.25
+    rmse: 4.35
+    r2_score: 0.85
+  # Wasserstein distance (in std devs) above which a numeric column counts as drifted and gets logged
+  drift_threshold: 0.1

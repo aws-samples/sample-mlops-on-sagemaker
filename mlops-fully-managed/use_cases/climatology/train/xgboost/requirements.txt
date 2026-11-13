@@ -1,0 +1,5 @@
+# Pinned to the version the inference container installs, so the pickled
+# booster loads there
+xgboost==3.4.1
+mlflow>=3.10.0
+sagemaker-mlflow>=0.5.0

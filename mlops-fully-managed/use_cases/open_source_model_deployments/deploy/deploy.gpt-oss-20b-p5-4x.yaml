@@ -1,0 +1,36 @@
+# openai/gpt-oss-20b from the JumpStart cache on a reserved H100
+model_name: gpt-oss-20b-p5-4x
+endpoint_name: gpt-oss-20b-p5-4x
+model_data_s3_uri: "s3://jumpstart-cache-prod-us-west-2/openai-reasoning/openai-reasoning-gpt-oss-20b/artifacts/inference-prepack/v1.0.0/"
+additional_model_data_sources:
+  - channel_name: eagle
+    s3_uri: "s3://jumpstart-cache-prod-us-west-2/lmi-eagle-heads/models/gpt-oss-20b-p-eagle/"
+image_uri: 763104351884.dkr.ecr.us-west-2.amazonaws.com/vllm:0.18.0-gpu-py312-cu129-ubuntu22.04-sagemaker
+instance_preferences:
+  - ml.p5.4xlarge
+instance_count: 1
+training_plan_arn: "arn:aws:sagemaker:us-west-2:123456789012:training-plan/sm-endpoint"
+model_data_download_timeout_seconds: 3600
+startup_health_check_timeout_seconds: 3600
+# p5 carries local NVMe, so no volume_size_gb
+# Serving settings
+environment:
+  HF_MODEL_ID: /opt/ml/model
+  MODEL_CACHE_ROOT: /opt/ml/model
+  # gpt-oss tokenizes with tiktoken, and o200k_base.tiktoken is in the artifact
+  TIKTOKEN_ENCODINGS_BASE: /opt/ml/model
+  SAGEMAKER_CONTAINER_LOG_LEVEL: 20
+  SAGEMAKER_ENV: 1
+  SAGEMAKER_MODEL_SERVER_TIMEOUT: 3600
+  SAGEMAKER_MODEL_SERVER_WORKERS: 1
+  SAGEMAKER_PROGRAM: inference.py
+  SAGEMAKER_SUBMIT_DIRECTORY: /opt/ml/model/code
+  SM_VLLM_TENSOR_PARALLEL_SIZE: 1
+  TENSOR_PARALLEL_DEGREE: 1
+  SM_VLLM_MAX_MODEL_LEN: 8192
+  SM_VLLM_SPECULATIVE_CONFIG: '{"model": "/opt/ml/additional-model-data-sources/eagle", "method": "eagle3", "num_speculative_tokens": 3, "parallel_drafting": true}'
+enable_network_isolation: true
+serializer: json
+deserializer: json
+payload_path: ./deploy/payload.chat.json
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

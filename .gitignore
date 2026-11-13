@@ -1,0 +1,16 @@
+.env.secret
+.DS_Store
+__pycache__
+# Ignore local training files
+docker-compose.yaml
+algo-1/
+compressed_artifacts/
+artifacts/
+model/
+.vscode/
+.mcp.json
+.venv
+data/
+payload.*.json
+settings.local.json
+.ruff_cache

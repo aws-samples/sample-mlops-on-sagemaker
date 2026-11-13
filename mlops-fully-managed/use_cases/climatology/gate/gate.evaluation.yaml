@@ -1,0 +1,13 @@
+# Name of the step in the pipeline
+step_name: climatology-evaluation-gate
+
+# Any metric the parent evaluation step publishes under evaluation.metrics in
+# metadata.json: test_rmse, test_mae, test_r2 or test_rows
+metric: test_rmse
+
+# The gate passes when the below comparison is true
+# Options: less_than, less_than_or_equal, greater_than, greater_than_or_equal or equal
+comparison: less_than_or_equal
+
+# Degrees C. On a fail, the pipeline stops before the downstream steps
+threshold: 4.0

@@ -1,0 +1,26 @@
+# Metadata
+job_name: climatology-reporting
+
+# Data
+raw_data_s3_path: "s3://amzn-s3-demo-bucket/climatology/predictions"
+
+# Code
+source_code_dir: ./process/report
+source_code_entry_point_command: >-
+  python build_report.py
+  --report_s3_uri s3://amzn-s3-demo-bucket/climatology/reports/climatology-report.md
+
+# Compute
+image_uri: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:1.9-0
+instance_type: ml.m5.large
+instance_count: 1
+instance_volume_size: 30
+keep_alive_hours: 1
+max_runtime_hours: 1
+
+# Experiment tracking
+mlflow_arn: "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-EXAMPLE123"
+mlflow_experiment_name: climatology
+
+# Permissions
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

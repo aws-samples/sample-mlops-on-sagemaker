@@ -1,0 +1,30 @@
+# Metadata
+job_name: climatology-select-best-model
+
+# Data
+metadata_output_s3_path: "s3://amzn-s3-demo-bucket/climatology/best-model/metadata"
+
+# Code
+source_code_dir: ./process/select_model
+
+source_code_entry_point_command: >-
+  python select_best_model.py
+  --best_model_output_s3_uri s3://amzn-s3-demo-bucket/climatology/best-model/model.tar.gz
+  --best_model_metrics_s3_uri s3://amzn-s3-demo-bucket/climatology/best-model/metrics.json
+  --decision_metric validation_rmse
+  --decision_mode min
+
+# Compute
+image_uri: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:1.9-0
+instance_type: ml.m5.2xlarge
+instance_count: 1
+instance_volume_size: 50
+keep_alive_hours: 1
+max_runtime_hours: 1
+
+# Experiment tracking
+mlflow_arn: "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-EXAMPLE123"
+mlflow_experiment_name: climatology
+
+# Permissions
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"

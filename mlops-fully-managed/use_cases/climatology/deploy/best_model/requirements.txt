@@ -1,0 +1,3 @@
+# The winner may be either model type, so the handler needs to unpickle an
+# XGBRegressor as well as a RandomForestRegressor. Same pin as the training job
+xgboost==3.4.1

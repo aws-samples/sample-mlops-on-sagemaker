@@ -1,0 +1,20 @@
+# Model source
+model_data_s3_uri: "s3://amzn-s3-demo-bucket/climatology/best-model/model.tar.gz"
+
+inference_image_uri: 246618743249.dkr.ecr.us-west-2.amazonaws.com/sagemaker-scikit-learn:1.9-0
+
+model_metrics_s3_uri: "s3://amzn-s3-demo-bucket/climatology/best-model/metrics.json"
+
+model_name: ClimatologyBestModel
+model_description: Best of the XGBoost and random forest GHCN daily high temperature models
+model_package_group_name: climatology-package-group
+model_status: PendingManualApproval
+
+# Inference specs
+inference_instances:
+  - ml.m5.2xlarge
+
+mlflow_arn: "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-EXAMPLE123"
+
+# Permissions
+sagemaker_execution_role: "arn:aws:iam::123456789012:role/service-role/AmazonSageMaker-ExecutionRole-EXAMPLE"
